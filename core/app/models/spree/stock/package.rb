@@ -1,26 +1,35 @@
 module Spree
   module Stock
     class Package
-      attr_reader :stock_location, :contents
+      attr_reader :stock_location
       attr_accessor :shipping_rates
 
-      def initialize(stock_location, contents=[])
+      def initialize(stock_location, unindexed_contents=[])
         @stock_location = stock_location
-        @contents = contents
+        @indexed_contents = {}
         @shipping_rates = Array.new
+        index_contents(unindexed_contents)
       end
 
       def add(inventory_unit, state = :on_hand)
-        contents << ContentItem.new(inventory_unit, state) unless find_item(inventory_unit)
+        add_unit(inventory_unit, state)
       end
 
       def add_multiple(inventory_units, state = :on_hand)
-        inventory_units.each { |inventory_unit| add(inventory_unit, state) }
+        inventory_units.each { |inventory_unit| add_unit(inventory_unit, state) }
+      end
+
+      def remove_first_item
+        inventory_unit = @indexed_contents.first.first
+        remove(inventory_unit)
       end
 
       def remove(inventory_unit)
-        item = find_item(inventory_unit)
-        @contents -= [item] if item
+        remove_unit(inventory_unit)
+      end
+
+      def contents
+        @indexed_contents.values.flatten
       end
 
       # Fix regression that removed package.order.
@@ -41,11 +50,12 @@ module Spree
         contents.select(&:backordered?)
       end
 
+      def awaiting_feed
+        contents.select(&:awaiting_feed?)
+      end
+
       def find_item(inventory_unit, state = nil)
-        contents.detect do |item|
-          item.inventory_unit == inventory_unit &&
-            (!state || item.state.to_s == state.to_s)
-        end
+        indexed_contents_for(inventory_unit).detect { |i| (!state || i.state.to_s == state.to_s) }
       end
 
       def quantity(state = nil)
@@ -58,7 +68,7 @@ module Spree
       end
 
       def currency
-        order.currency
+        #TODO calculate from first variant?
       end
 
       def shipping_categories
@@ -76,16 +86,42 @@ module Spree
       end
 
       def to_shipment
-        # At this point we should only have one content item per inventory unit
-        # across the entire set of inventory units to be shipped, which has been
-        # taken care of by the Prioritizer
-        contents.each { |content_item| content_item.inventory_unit.state = content_item.state.to_s }
+        contents.each do |content_item|
+          content_item.inventory_unit.state = content_item.state.to_s
+        end
 
         Spree::Shipment.new(
           stock_location: stock_location,
           shipping_rates: shipping_rates,
           inventory_units: contents.map(&:inventory_unit)
         )
+      end
+
+      private
+
+      def index_contents(unindexed_contents)
+        unindexed_contents.each do |content_item|
+          inventory_unit = content_item.inventory_unit
+          next if find_item(inventory_unit)
+          indexed_contents_for(inventory_unit) << content_item
+        end
+      end
+
+      def indexed_contents_for(inventory_unit)
+        @indexed_contents[inventory_unit] ||= []
+        @indexed_contents[inventory_unit]
+      end
+
+      def add_unit(inventory_unit, state)
+        return if find_item(inventory_unit)
+        indexed_contents_for(inventory_unit) << ContentItem.new(inventory_unit, state)
+      end
+
+      def remove_unit(inventory_unit)
+        item = find_item(inventory_unit)
+        @indexed_contents[inventory_unit] -= [item] if item
+        @indexed_contents.delete(inventory_unit) if @indexed_contents[inventory_unit].empty?
+        item
       end
     end
   end

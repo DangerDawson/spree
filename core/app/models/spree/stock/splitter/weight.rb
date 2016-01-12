@@ -21,7 +21,7 @@ module Spree
           removed = []
           while package.weight > self.threshold
             break if package.contents.size == 1
-            removed << package.contents.shift
+            removed << package.remove_first_item
           end
           removed
         end
